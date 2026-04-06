@@ -1,0 +1,15 @@
+settings:
+  ## set to your desired prefix    default: "&8[&bTicket&8]"
+  prefix: "&8[&bTicket&8]"
+  ## max amount of tickets per user
+  ticket-limit: 5
+
+  ## wouldn't recommend to change those
+  teleport-mode: "MIDDLE_CLICK"
+  close-mode: "RIGHT_CLICK"
+
+sounds:
+  notify: "BLOCK_NOTE_BLOCK_CHIME"
+  ui-click: "UI_BUTTON_CLICK"
+  error: "ENTITY_VILLAGER_NO"
+  success: "ENTITY_PLAYER_LEVELUP"

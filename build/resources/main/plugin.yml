@@ -1,0 +1,13 @@
+name: EasyTicket
+version: '1.0'
+
+main: dranpassung.easyTicket.EasyTicket
+api-version: '1.21'
+load: POSTWORLD
+commands:
+  ticket:
+    description: Create or manage tickets.
+permissions:
+  easyticket.staff:
+    description: Allows opening the staff dashboard.
+    default: op
