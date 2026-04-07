@@ -86,6 +86,8 @@ public class TicketListener implements Listener {
             player.closeInventory();
             player.sendMessage(config.getPrefix().append(Component.text("--- ENTERED CHATROOM ---", NamedTextColor.GREEN)));
             player.sendMessage(Component.text("Type your messages. Type 'exit' to leave.", NamedTextColor.GRAY));
+            // FIX 2: Inform the player that global chat is now hidden
+            player.sendMessage(Component.text("(Global chat is hidden while in this ticket.)", NamedTextColor.DARK_GRAY));
             for (String line : t.getTranscript()) player.sendMessage(Component.text(line, NamedTextColor.WHITE));
             player.playSound(player.getLocation(), config.getSuccessSound(), 1f, 1f);
 
@@ -112,16 +114,23 @@ public class TicketListener implements Listener {
         Player player = event.getPlayer();
         String msg = PlainTextComponentSerializer.plainText().serialize(event.message());
 
+        // --- TICKET CREATION ---
         if (manager.isCreating(player.getUniqueId())) {
             event.setCancelled(true);
             manager.setCreating(player.getUniqueId(), false);
             Ticket t = new Ticket(player.getUniqueId(), player.getName(), msg);
             manager.createTicket(t);
-            player.sendMessage(config.getPrefix().append(Component.text("Ticket Created!", NamedTextColor.GREEN)));
+
+            // 1: Auto-enter the creator into the ticket chat immediately.
+            manager.enterChat(player.getUniqueId(), t.getId());
+
+            player.sendMessage(config.getPrefix().append(Component.text("Ticket created! You are now in the ticket chat.", NamedTextColor.GREEN)));
+            player.sendMessage(Component.text("Type your messages. Type 'exit' to leave. (Global chat is hidden)", NamedTextColor.GRAY));
             player.playSound(player.getLocation(), config.getSuccessSound(), 1f, 1f);
             return;
         }
 
+        // --- ACTIVE TICKET CHAT ---
         UUID activeTid = manager.getActiveTicketForPlayer(player.getUniqueId());
         if (activeTid != null) {
             event.setCancelled(true);
@@ -148,8 +157,19 @@ public class TicketListener implements Listener {
                         p.sendMessage(chatLine);
                         if (p.hasPermission("easyticket.staff") && manager.hasNotifications(p.getUniqueId())) {
                             p.playSound(p.getLocation(), config.getNotifySound(), 1f, 1f);
+                        } else if (p.getUniqueId().equals(t.getCreatorUUID())
+                                && !p.getUniqueId().equals(player.getUniqueId())) {
+                            p.playSound(p.getLocation(), config.getNotifySound(), 1f, 1f);
                         }
                     });
+            return;
         }
+        // 2: Remove any player currently inside a ticket chat from the viewer set
+        event.viewers().removeIf(viewer -> {
+            if (viewer instanceof Player viewingPlayer) {
+                return manager.getActiveTicketForPlayer(viewingPlayer.getUniqueId()) != null;
+            }
+            return false;
+        });
     }
 }
