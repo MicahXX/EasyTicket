@@ -8,15 +8,22 @@ import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class TicketListener implements Listener {
     private final TicketManager manager;
     private final ConfigManager config;
+    private final Map<UUID, List<Component>> missedGlobalChat = new ConcurrentHashMap<>();
 
     public TicketListener(TicketManager manager, ConfigManager config) {
         this.manager = manager;
@@ -86,18 +93,30 @@ public class TicketListener implements Listener {
             player.closeInventory();
             player.sendMessage(config.getPrefix().append(Component.text("--- ENTERED CHATROOM ---", NamedTextColor.GREEN)));
             player.sendMessage(Component.text("Type your messages. Type 'exit' to leave.", NamedTextColor.GRAY));
-            // FIX 2: Inform the player that global chat is now hidden
             player.sendMessage(Component.text("(Global chat is hidden while in this ticket.)", NamedTextColor.DARK_GRAY));
             for (String line : t.getTranscript()) player.sendMessage(Component.text(line, NamedTextColor.WHITE));
             player.playSound(player.getLocation(), config.getSuccessSound(), 1f, 1f);
 
         } else if (event.isRightClick() && player.hasPermission("easyticket.staff")) {
+            Component closeNotice = config.getPrefix()
+                    .append(Component.text("Your ticket has been closed by ", NamedTextColor.RED))
+                    .append(Component.text(player.getName(), NamedTextColor.YELLOW))
+                    .append(Component.text(".", NamedTextColor.RED));
+
+            Player creator = Bukkit.getPlayer(t.getCreatorUUID());
+            if (creator != null && creator.isOnline()) {
+                creator.sendMessage(closeNotice);
+                creator.playSound(creator.getLocation(), config.getErrorSound(), 1f, 0.8f);
+            } else {
+                manager.addPendingNotification(t.getCreatorUUID(), closeNotice);
+            }
+
             manager.closeTicket(tid, player.getName());
             player.sendMessage(config.getPrefix().append(Component.text("Ticket Closed.", NamedTextColor.RED)));
             player.playSound(player.getLocation(), config.getUiClickSound(), 1f, 0.5f);
             TicketGUI.openDashboard(player, manager, true, 0);
 
-        } else if (event.getClick().toString().contains("MIDDLE") && player.hasPermission("easyticket.staff")) {
+        } else if (event.getClick() == ClickType.MIDDLE && player.hasPermission("easyticket.staff")) {
             Player target = Bukkit.getPlayer(t.getCreatorUUID());
             if (target != null && target.isOnline()) {
                 player.teleport(target.getLocation());
@@ -120,10 +139,7 @@ public class TicketListener implements Listener {
             manager.setCreating(player.getUniqueId(), false);
             Ticket t = new Ticket(player.getUniqueId(), player.getName(), msg);
             manager.createTicket(t);
-
-            // 1: Auto-enter the creator into the ticket chat immediately.
             manager.enterChat(player.getUniqueId(), t.getId());
-
             player.sendMessage(config.getPrefix().append(Component.text("Ticket created! You are now in the ticket chat.", NamedTextColor.GREEN)));
             player.sendMessage(Component.text("Type your messages. Type 'exit' to leave. (Global chat is hidden)", NamedTextColor.GRAY));
             player.playSound(player.getLocation(), config.getSuccessSound(), 1f, 1f);
@@ -144,6 +160,7 @@ public class TicketListener implements Listener {
             if (msg.equalsIgnoreCase("exit")) {
                 manager.leaveChat(player.getUniqueId());
                 player.sendMessage(config.getPrefix().append(Component.text("You left the ticket chat.", NamedTextColor.GOLD)));
+                replaymissedGlobalChat(player);
                 return;
             }
 
@@ -151,6 +168,7 @@ public class TicketListener implements Listener {
             manager.saveActiveTicket(t);
 
             Component chatLine = config.getPrefix().append(Component.text(player.getName() + ": " + msg, NamedTextColor.WHITE));
+
             Bukkit.getOnlinePlayers().stream()
                     .filter(p -> p.getUniqueId().equals(t.getCreatorUUID()) || p.hasPermission("easyticket.staff"))
                     .forEach(p -> {
@@ -162,14 +180,59 @@ public class TicketListener implements Listener {
                             p.playSound(p.getLocation(), config.getNotifySound(), 1f, 1f);
                         }
                     });
+
+            // If the creator is offline, queue the message for them
+            if (Bukkit.getPlayer(t.getCreatorUUID()) == null) {
+                manager.addPendingNotification(t.getCreatorUUID(), chatLine);
+            }
             return;
         }
-        // 2: Remove any player currently inside a ticket chat from the viewer set
+
         event.viewers().removeIf(viewer -> {
             if (viewer instanceof Player viewingPlayer) {
-                return manager.getActiveTicketForPlayer(viewingPlayer.getUniqueId()) != null;
+                if (manager.getActiveTicketForPlayer(viewingPlayer.getUniqueId()) != null) {
+                    // Build a readable copy of the message to replay later
+                    Component captured = Component.text("[Global] ", NamedTextColor.DARK_GRAY)
+                            .append(player.name().colorIfAbsent(NamedTextColor.GRAY))
+                            .append(Component.text(": ", NamedTextColor.GRAY))
+                            .append(event.message());
+                    missedGlobalChat
+                            .computeIfAbsent(viewingPlayer.getUniqueId(), k -> new ArrayList<>())
+                            .add(captured);
+                    return true;
+                }
             }
             return false;
         });
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        UUID uid = player.getUniqueId();
+
+        List<Component> pending = manager.getPendingNotifications(uid);
+        if (!pending.isEmpty()) {
+            player.sendMessage(config.getPrefix()
+                    .append(Component.text("--- " + pending.size() + " notification(s) while you were offline ---", NamedTextColor.GOLD)));
+            for (Component notification : pending) {
+                player.sendMessage(notification);
+            }
+            manager.clearPendingNotifications(uid);
+            player.playSound(player.getLocation(), config.getNotifySound(), 1f, 1f);
+        }
+
+        replaymissedGlobalChat(player);
+    }
+
+    private void replaymissedGlobalChat(Player player) {
+        List<Component> missed = missedGlobalChat.remove(player.getUniqueId());
+        if (missed != null && !missed.isEmpty()) {
+            player.sendMessage(config.getPrefix()
+                    .append(Component.text("--- " + missed.size() + " global message(s) you missed ---", NamedTextColor.DARK_GRAY)));
+            for (Component line : missed) {
+                player.sendMessage(line);
+            }
+        }
     }
 }
